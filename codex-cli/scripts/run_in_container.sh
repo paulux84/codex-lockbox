@@ -11,6 +11,7 @@ ALLOW_REMOTE_IMAGE_PULL="${ALLOW_REMOTE_IMAGE_PULL:-0}"
 DEFAULT_OPENAI_ALLOWED_DOMAINS=(api.openai.com chat.openai.com chatgpt.com auth0.openai.com platform.openai.com openai.com)
 USER_OPENAI_ALLOWED_DOMAINS="${OPENAI_ALLOWED_DOMAINS-}"
 OPENAI_ALLOWED_DOMAINS=""
+HAPROXY_PORT="${HAPROXY_PORT:-8443}"
 INIT_SCRIPT=""
 READ_ONLY_PATHS=()
 CONFIG_OVERRIDE_FILE=""
@@ -397,6 +398,77 @@ for domain in $OPENAI_ALLOWED_DOMAINS; do
   echo "$domain" >>"$ALLOWED_DOMAINS_FILE"
 done
 
+RESOLV_CONF_FILE="${RESOLV_CONF_FILE:-/etc/resolv.conf}"
+NAMESERVERS=()
+if [[ -f "$RESOLV_CONF_FILE" ]]; then
+  while read -r line; do
+    ns="${line##nameserver }"
+    if [[ "$line" =~ ^nameserver[[:space:]]+ ]]; then
+      if [[ "$ns" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ || "$ns" =~ ^[0-9a-fA-F:]+$ ]]; then
+        NAMESERVERS+=("$ns")
+      fi
+    fi
+  done < "$RESOLV_CONF_FILE"
+fi
+
+if [[ ${#NAMESERVERS[@]} -eq 0 ]]; then
+  echo "Error: no nameservers found in $RESOLV_CONF_FILE for HAProxy resolvers."
+  exit 1
+fi
+
+HAPROXY_CFG="$ALLOWED_DOMAINS_DIR/haproxy.cfg"
+{
+  cat <<'EOF'
+global
+  daemon
+  maxconn 256
+  log stdout format raw daemon
+
+defaults
+  mode http
+  timeout connect 5s
+  timeout client 30s
+  timeout server 30s
+
+resolvers codex_dns
+EOF
+  idx=1
+  for ns in "${NAMESERVERS[@]}"; do
+    echo "  nameserver ns${idx} ${ns}:53"
+    idx=$((idx + 1))
+  done
+  cat <<EOF
+  resolve_retries 3
+  timeout resolve 2s
+  timeout retry 2s
+  hold valid 10s
+
+frontend forward_proxy
+  bind 127.0.0.1:${HAPROXY_PORT}
+  mode http
+EOF
+  echo "  http-request set-var(txn.connect_host) req.hdr(host),field(1,:)"
+  echo "  http-request set-var(txn.connect_host_lc) req.hdr(host),field(1,:),lower"
+  echo -n "  acl allowed_host var(txn.connect_host_lc) -m str -i"
+  while read -r allowed_domain; do
+    printf " %s" "${allowed_domain,,}"
+  done <"$ALLOWED_DOMAINS_FILE"
+  cat <<'EOF'
+  http-request deny unless { method CONNECT }
+  http-request deny if !allowed_host
+  http-request do-resolve(txn.fwd_ip,codex_dns,ipv4) req.hdr(host),field(1,:)
+  http-request set-dst var(txn.fwd_ip)
+  http-request set-dst-port int(443)
+  default_backend connect_out
+
+backend connect_out
+  mode http
+  server forward 0.0.0.0:443 ssl sni req.hdr(host),field(1,:) verify required verifyhost req.hdr(host),field(1,:) ca-file /etc/ssl/certs/ca-certificates.crt
+EOF
+} >"$HAPROXY_CFG"
+chmod 644 "$HAPROXY_CFG" "$ALLOWED_DOMAINS_FILE"
+chmod 755 "$ALLOWED_DOMAINS_DIR"
+
 DOCKER_RUN_ARGS=(
   --name "$CONTAINER_NAME"
   -d
@@ -407,6 +479,8 @@ DOCKER_RUN_ARGS=(
 
 DOCKER_RUN_ARGS+=(-v "$CODEX_HOME_DIR:/codex_home")
 DOCKER_RUN_ARGS+=(-e "CODEX_HOME=/codex_home")
+DOCKER_RUN_ARGS+=(-v "$ALLOWED_DOMAINS_DIR:/etc/codex:ro")
+DOCKER_RUN_ARGS+=(-e "HAPROXY_PORT=$HAPROXY_PORT")
 DOCKER_RUN_ARGS+=(--mount "type=bind,src=$SESSIONS_PATH_ABS,dst=/codex_home/sessions")
 
 for ro_path in "${READ_ONLY_PATHS_ABS[@]}"; do
@@ -414,6 +488,12 @@ for ro_path in "${READ_ONLY_PATHS_ABS[@]}"; do
 done
 
 docker run "${DOCKER_RUN_ARGS[@]}" "$RESOLVED_DOCKER_IMAGE" sleep infinity
+
+# Start HAProxy as its dedicated user so owner-based firewall rules allow egress
+if ! docker exec --user haproxy "$CONTAINER_NAME" haproxy -f /etc/codex/haproxy.cfg -D -p /tmp/haproxy.pid; then
+  echo "Error: failed to start HAProxy inside the sandbox container."
+  exit 1
+fi
 
 # Initialize firewall in shared network namespace without granting NET_ADMIN to the main container
 docker run --rm \
@@ -423,6 +503,7 @@ docker run --rm \
   --network "container:$CONTAINER_NAME" \
   -v "$SCRIPT_DIR/init_firewall.sh:/usr/local/bin/init_firewall.sh:ro" \
   -v "$ALLOWED_DOMAINS_DIR:/etc/codex:ro" \
+  -e "HAPROXY_PORT=$HAPROXY_PORT" \
   --entrypoint bash \
   "$RESOLVED_DOCKER_IMAGE" \
   -c "/usr/local/bin/init_firewall.sh"
@@ -440,4 +521,4 @@ else
   exec_flags+=(-i)
 fi
 
-docker exec --user codex "${exec_flags[@]}" "$CONTAINER_NAME" bash -c "SANDBOX_ENV_DIR=\"/codex_home\"; cd \"/app$WORK_DIR\" && if [ -x \"\$SANDBOX_ENV_DIR/init.sh\" ]; then \"\$SANDBOX_ENV_DIR/init.sh\"; fi; codex --full-auto${quoted_args}"
+docker exec --user codex "${exec_flags[@]}" "$CONTAINER_NAME" bash -c "SANDBOX_ENV_DIR=\"/codex_home\"; export HTTPS_PROXY=http://127.0.0.1:${HAPROXY_PORT}; export HTTP_PROXY=http://127.0.0.1:${HAPROXY_PORT}; export NO_PROXY=127.0.0.1,localhost; cd \"/app$WORK_DIR\" && if [ -x \"\$SANDBOX_ENV_DIR/init.sh\" ]; then \"\$SANDBOX_ENV_DIR/init.sh\"; fi; codex --full-auto${quoted_args}"

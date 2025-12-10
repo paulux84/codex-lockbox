@@ -10,6 +10,7 @@ RUN apt-get update && \
       git \
       curl \
       dnsutils \
+      haproxy \
       ca-certificates \
       iptables \
       iproute2 \

@@ -11,6 +11,9 @@ DEFAULT_ALLOWED_DOMAINS=(
     "openai.com"
 )
 
+HAPROXY_PORT="${HAPROXY_PORT:-8443}"
+HAPROXY_USER="${HAPROXY_USER:-haproxy}"
+
 # Read allowed domains from file
 ALLOWED_DOMAINS_FILE="${ALLOWED_DOMAINS_FILE:-/etc/codex/allowed_domains.txt}"
 if [ -f "$ALLOWED_DOMAINS_FILE" ]; then
@@ -28,6 +31,11 @@ fi
 # Ensure we have at least one domain
 if [ ${#ALLOWED_DOMAINS[@]} -eq 0 ]; then
     echo "ERROR: No allowed domains specified"
+    exit 1
+fi
+
+if ! id -u "$HAPROXY_USER" >/dev/null 2>&1; then
+    echo "ERROR: HAProxy user '$HAPROXY_USER' not found"
     exit 1
 fi
 
@@ -85,8 +93,6 @@ ip6tables -t nat -F 2>/dev/null || true
 ip6tables -t nat -X 2>/dev/null || true
 ip6tables -t mangle -F 2>/dev/null || true
 ip6tables -t mangle -X 2>/dev/null || true
-ipset destroy allowed-domains 2>/dev/null || true
-ipset destroy allowed-domains6 2>/dev/null || true
 
 # Set default policies to DROP immediately to fail closed on errors
 iptables -P INPUT DROP
@@ -117,40 +123,19 @@ iptables -A OUTPUT -o lo -j ACCEPT
 ip6tables -A INPUT -i lo -j ACCEPT
 ip6tables -A OUTPUT -o lo -j ACCEPT
 
-# Create ipset with CIDR support
-ipset create allowed-domains hash:net
-ipset create allowed-domains6 hash:net family inet6
-
-# Resolve and add other allowed domains
-for domain in "${ALLOWED_DOMAINS[@]}"; do
-    echo "Resolving $domain..."
-    mapfile -t resolved_ips < <(dig +short A "$domain" | grep -E '^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
-    mapfile -t resolved_ips_v6 < <(dig +short AAAA "$domain" | grep -iE '^[0-9a-f:]+$')
-    if [ ${#resolved_ips[@]} -eq 0 ] && [ ${#resolved_ips_v6[@]} -eq 0 ]; then
-        echo "ERROR: Failed to resolve $domain to IPv4 or IPv6"
-        exit 1
-    fi
-
-    for ip in "${resolved_ips[@]}"; do
-        echo "Adding $ip for $domain"
-        ipset add -exist allowed-domains "$ip"
-    done
-
-    for ip6 in "${resolved_ips_v6[@]}"; do
-        echo "Adding $ip6 for $domain"
-        ipset add -exist allowed-domains6 "$ip6"
-    done
-done
-
 # First allow established connections for already approved traffic
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 ip6tables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 ip6tables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-# Then allow only specific outbound traffic to allowed domains (TCP 443)
-iptables -A OUTPUT -p tcp --dport 443 -m set --match-set allowed-domains dst -j ACCEPT
-ip6tables -A OUTPUT -p tcp --dport 443 -m set --match-set allowed-domains6 dst -j ACCEPT
+# Allow traffic to the local HAProxy forward proxy listener
+iptables -A OUTPUT -p tcp --dport "$HAPROXY_PORT" -d 127.0.0.1/32 -j ACCEPT
+ip6tables -A OUTPUT -p tcp --dport "$HAPROXY_PORT" -d ::1/128 -j ACCEPT
+
+# Allow HAProxy user to reach remote 443 after allowlist/SNI verification
+iptables -A OUTPUT -p tcp --dport 443 -m owner --uid-owner "$HAPROXY_USER" -j ACCEPT
+ip6tables -A OUTPUT -p tcp --dport 443 -m owner --uid-owner "$HAPROXY_USER" -j ACCEPT
 
 # Append final REJECT rules for immediate error responses
 # For TCP traffic, send a TCP reset; for UDP, send ICMP port unreachable (IPv4) / ICMPv6 port unreachable (IPv6).
@@ -169,7 +154,11 @@ ip6tables -A FORWARD -p udp -j REJECT --reject-with icmp6-port-unreachable
 
 echo "Firewall configuration complete"
 echo "Verifying firewall rules..."
-if curl --connect-timeout 5 https://example.com >/dev/null 2>&1; then
+PROXY_URL="http://127.0.0.1:${HAPROXY_PORT}"
+export HTTPS_PROXY="$PROXY_URL"
+export HTTP_PROXY="$PROXY_URL"
+
+if curl --connect-timeout 5 --proxy "$PROXY_URL" https://example.com >/dev/null 2>&1; then
     echo "ERROR: Firewall verification failed - was able to reach https://example.com"
     exit 1
 else
@@ -177,9 +166,9 @@ else
 fi
 
 # Always verify OpenAI API access is working
-if ! curl --connect-timeout 5 https://api.openai.com >/dev/null 2>&1; then
-    echo "ERROR: Firewall verification failed - unable to reach https://api.openai.com"
+if ! curl --connect-timeout 5 --proxy "$PROXY_URL" https://api.openai.com >/dev/null 2>&1; then
+    echo "ERROR: Firewall verification failed - unable to reach https://api.openai.com via proxy $PROXY_URL"
     exit 1
 else
-    echo "Firewall verification passed - able to reach https://api.openai.com as expected"
+    echo "Firewall verification passed - able to reach https://api.openai.com via proxy as expected"
 fi
