@@ -2,6 +2,13 @@
 set -euo pipefail  # Exit on error, undefined vars, and pipeline failures
 IFS=$'\n\t'       # Stricter word splitting
 
+for cmd in iptables ip6tables ipset dig curl; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "ERROR: Required command '$cmd' not found in PATH" >&2
+    exit 1
+  fi
+done
+
 DEFAULT_ALLOWED_DOMAINS=(
     "api.openai.com"
     "chat.openai.com"
@@ -36,8 +43,11 @@ NAMESERVERS_V4=()
 NAMESERVERS_V6=()
 if [ -f "$RESOLV_CONF_FILE" ]; then
     while read -r line; do
-        ns="${line##nameserver }"
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$line" ]] && continue
+
         if [[ "$line" =~ ^nameserver[[:space:]]+ ]]; then
+            ns=$(awk '{print $2}' <<< "$line")
             if [[ "$ns" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
                 NAMESERVERS_V4+=("$ns")
             elif [[ "$ns" =~ ^[0-9a-fA-F:]+$ ]]; then
@@ -100,15 +110,11 @@ ip6tables -P OUTPUT DROP
 for ns in "${NAMESERVERS_V4[@]}"; do
     iptables -A OUTPUT -p udp -d "$ns" --dport 53 -j ACCEPT
     iptables -A OUTPUT -p tcp -d "$ns" --dport 53 -j ACCEPT
-    iptables -A INPUT -p udp -s "$ns" --sport 53 -j ACCEPT
-    iptables -A INPUT -p tcp -s "$ns" --sport 53 -j ACCEPT
 done
 
 for ns6 in "${NAMESERVERS_V6[@]}"; do
     ip6tables -A OUTPUT -p udp -d "$ns6" --dport 53 -j ACCEPT
     ip6tables -A OUTPUT -p tcp -d "$ns6" --dport 53 -j ACCEPT
-    ip6tables -A INPUT -p udp -s "$ns6" --sport 53 -j ACCEPT
-    ip6tables -A INPUT -p tcp -s "$ns6" --sport 53 -j ACCEPT
 done
 
 # Allow localhost
