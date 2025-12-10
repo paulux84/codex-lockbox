@@ -234,6 +234,7 @@ Lo script:
 - scrive `/etc/codex/allowed_domains.txt`;
 - esegue `init_firewall.sh`, che:
   - risolve i domini in IP;
+  - filtra gli IP privati/riservati dalle risoluzioni DNS (10/8, 172.16/12, 192.168/16, 169.254/16, 127/8, 0.0.0.0/8, broadcast; ::1, fe80::/10, ff00::/8) e fallisce se restano solo quelli (override opt-in: `ALLOW_PRIVATE_DNS=1`);
   - configura iptables/ipset;
   - verifica che `https://example.com` sia **bloccato** e `https://api.openai.com` **raggiungibile**.
   - blocca la rete locale/gateway (resta permesso solo il loopback e i domini whitelisted).

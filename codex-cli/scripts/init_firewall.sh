@@ -121,6 +121,26 @@ ip6tables -A OUTPUT -o lo -j ACCEPT
 ipset create allowed-domains hash:net
 ipset create allowed-domains6 hash:net family inet6
 
+is_private_v4() {
+    local ip="$1"
+    [[ "$ip" =~ ^10\. ]] && return 0
+    [[ "$ip" =~ ^192\.168\. ]] && return 0
+    [[ "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] && return 0
+    [[ "$ip" =~ ^169\.254\. ]] && return 0
+    [[ "$ip" =~ ^127\. ]] && return 0
+    [[ "$ip" =~ ^0\. ]] && return 0
+    [[ "$ip" == "255.255.255.255" ]] && return 0
+    return 1
+}
+
+is_private_v6() {
+    local ip="$1"
+    [[ "$ip" =~ ^::1(/128)?$ ]] && return 0
+    [[ "$ip" =~ ^fe[89abAB] ]] && return 0    # fe80::/10 link-local
+    [[ "$ip" =~ ^ff ]] && return 0             # ff00::/8 multicast
+    return 1
+}
+
 # Resolve and add other allowed domains
 for domain in "${ALLOWED_DOMAINS[@]}"; do
     echo "Resolving $domain..."
@@ -131,12 +151,35 @@ for domain in "${ALLOWED_DOMAINS[@]}"; do
         exit 1
     fi
 
+    filtered_v4=()
     for ip in "${resolved_ips[@]}"; do
+        if [[ "${ALLOW_PRIVATE_DNS:-0}" != "1" ]] && is_private_v4 "$ip"; then
+            echo "Skipping private/reserved IPv4 $ip for $domain" >&2
+            continue
+        fi
+        filtered_v4+=("$ip")
+    done
+
+    filtered_v6=()
+    for ip6 in "${resolved_ips_v6[@]}"; do
+        if [[ "${ALLOW_PRIVATE_DNS:-0}" != "1" ]] && is_private_v6 "$ip6"; then
+            echo "Skipping private/reserved IPv6 $ip6 for $domain" >&2
+            continue
+        fi
+        filtered_v6+=("$ip6")
+    done
+
+    if [ ${#filtered_v4[@]} -eq 0 ] && [ ${#filtered_v6[@]} -eq 0 ]; then
+        echo "ERROR: All IPs for $domain filtered (private/reserved); refusing to allow" >&2
+        exit 1
+    fi
+
+    for ip in "${filtered_v4[@]}"; do
         echo "Adding $ip for $domain"
         ipset add -exist allowed-domains "$ip"
     done
 
-    for ip6 in "${resolved_ips_v6[@]}"; do
+    for ip6 in "${filtered_v6[@]}"; do
         echo "Adding $ip6 for $domain"
         ipset add -exist allowed-domains6 "$ip6"
     done
