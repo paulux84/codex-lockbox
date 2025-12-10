@@ -32,6 +32,7 @@ Note sul layout:
 - Esempi di init inclusi (non auto-eseguiti): `sandbox-setup.sh` (Python/Maven/Node) e `sandbox-setup-java-25.sh` (JDK 25 locale al progetto).
 - Mount multipli in sola lettura con `--read-only <path>` (ripetibile, file o directory, montati in `ro` su `/app<path>`); selezione/auto-upgrade versione Codex al runtime non ancora supportata (solo `CODEX_VERSION` in build).
 - Protezione workdir: i percorsi passati a `--work_dir` vengono risolti e se risultano `/` vengono rifiutati (niente mount della root host nel container).
+- Montare percorsi **writable** fuori dalla workdir (es. `--codex-home`, `--sessions-path`) richiede conferma interattiva e comporta l’esposizione in scrittura di quei path host al container: rispondi `y` solo se lo vuoi davvero.
 
 ## Prerequisiti
 
@@ -242,6 +243,8 @@ Lo script:
 ### `CODEX_CONFIG_DIR`
 
 Controlla **da dove** viene letta la configurazione Codex (incl. `auth.json`, `config.toml`) sul **tuo host**, poi la copia se mancante in `WORK_DIR/.codex/.environment/` e monta quella directory come `/codex_home` (con `CODEX_HOME=/codex_home`). Le sessioni non vengono copiate: il container usa un percorso dedicato (default `WORK_DIR/.codex/.environment/sessions`, override con `--sessions-path`). Puoi sovrascrivere il `config.toml` esplicitamente con `--config <file|dir_con_config.toml>`; se passi una directory con anche `auth.json`, verrà copiato (sovrascritto) anch’esso.
+
+Se indichi `--codex-home` o `--sessions-path` fuori dalla workdir, lo script chiede conferma interattiva e ti ricorda che quel percorso host verrà esposto in scrittura al container: rispondi `y` solo se intendi davvero condividere quel path (rompe l’isolamento limitato alla workdir).
 
 Ordine di ricerca per la sorgente host (usato solo se `--config` non è passato e il file è mancante):
 

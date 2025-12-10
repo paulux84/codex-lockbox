@@ -209,8 +209,9 @@ if [[ -n "$CODEX_DATA_DIR" ]]; then
   fi
   if [[ "$CODEX_DATA_DIR" != "$WORK_DIR"/* ]]; then
     echo "Warning: codex home is outside the workdir and will be mounted writable in the container: $CODEX_DATA_DIR"
+    echo "This exposes that host path to writes from inside the container (breaks strict workdir-only isolation)."
     if [ -t 0 ]; then
-      read -r -p "Proceed with mounting codex home outside workdir? [y/N] " confirm_codex_home
+      read -r -p "Proceed with mounting codex home outside workdir? This will expose $CODEX_DATA_DIR to writes from the container. [y/N] " confirm_codex_home
       if [[ ! "$confirm_codex_home" =~ ^[Yy]$ ]]; then
         echo "Aborting per user choice."
         exit 1
@@ -364,8 +365,9 @@ else
 fi
 if [[ "$SESSIONS_PATH_ABS" != "$WORK_DIR"/* ]]; then
   echo "Warning: sessions path is outside the workdir and will be mounted writable in the container: $SESSIONS_PATH_ABS"
+  echo "This exposes that host path to writes from inside the container (breaks strict workdir-only isolation)."
   if [ -t 0 ]; then
-    read -r -p "Proceed with mounting sessions path outside workdir? [y/N] " confirm_sessions
+    read -r -p "Proceed with mounting sessions path outside workdir? This will expose $SESSIONS_PATH_ABS to writes from the container. [y/N] " confirm_sessions
     if [[ ! "$confirm_sessions" =~ ^[Yy]$ ]]; then
       echo "Aborting per user choice."
       exit 1
