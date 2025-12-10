@@ -9,7 +9,7 @@ CODEX_DOCKER_IMAGE="${CODEX_DOCKER_IMAGE:-codex-sandbox}"
 CODEX_VERSION="${CODEX_VERSION:-}"
 ALLOW_REMOTE_IMAGE_PULL="${ALLOW_REMOTE_IMAGE_PULL:-0}"
 DEFAULT_OPENAI_ALLOWED_DOMAINS=(api.openai.com chat.openai.com chatgpt.com auth0.openai.com platform.openai.com openai.com)
-USER_OPENAI_ALLOWED_DOMAINS="${OPENAI_ALLOWED_DOMAINS-}"
+OPENAI_ALLOWED_DOMAINS_ENV="${OPENAI_ALLOWED_DOMAINS-}"
 OPENAI_ALLOWED_DOMAINS=""
 INIT_SCRIPT=""
 READ_ONLY_PATHS=()
@@ -18,26 +18,8 @@ SESSIONS_PATH=""
 CODEX_DATA_DIR="${CODEX_DATA_DIR:-}"
 WORKDIR_CODEX_DIR=""
 CONFIG_SOURCE_DIR=""
-
-# Merge default domains with user-supplied ones (user additions do not replace defaults)
-declare -A __SEEN_DOMAINS=()
+HOST_ALLOWED_DOMAINS_FILE=""
 MERGED_OPENAI_ALLOWED_DOMAINS=()
-for domain in "${DEFAULT_OPENAI_ALLOWED_DOMAINS[@]}"; do
-  if [[ -n "$domain" && -z "${__SEEN_DOMAINS[$domain]+isset}" ]]; then
-    MERGED_OPENAI_ALLOWED_DOMAINS+=("$domain")
-    __SEEN_DOMAINS[$domain]=1
-  fi
-done
-if [[ -n "$USER_OPENAI_ALLOWED_DOMAINS" ]]; then
-  read -r -a __USER_DOMAINS <<<"$USER_OPENAI_ALLOWED_DOMAINS"
-  for domain in "${__USER_DOMAINS[@]}"; do
-    if [[ -n "$domain" && -z "${__SEEN_DOMAINS[$domain]+isset}" ]]; then
-      MERGED_OPENAI_ALLOWED_DOMAINS+=("$domain")
-      __SEEN_DOMAINS[$domain]=1
-    fi
-  done
-fi
-OPENAI_ALLOWED_DOMAINS="${MERGED_OPENAI_ALLOWED_DOMAINS[*]}"
 
 get_latest_codex_version() {
   if ! command -v npm >/dev/null 2>&1; then
@@ -92,6 +74,53 @@ ensure_image_with_version() {
     -f "$SCRIPT_DIR/Dockerfile.codex-sandbox" \
     --build-arg "CODEX_VERSION=$version" \
     "$SCRIPT_DIR"
+}
+
+merge_allowed_domains() {
+  local allowed_domains_file="$1"
+  local __USER_DOMAINS=()
+  declare -A __SEEN_DOMAINS=()
+  MERGED_OPENAI_ALLOWED_DOMAINS=()
+
+  for domain in "${DEFAULT_OPENAI_ALLOWED_DOMAINS[@]}"; do
+    if [[ -n "$domain" && -z "${__SEEN_DOMAINS[$domain]+isset}" ]]; then
+      MERGED_OPENAI_ALLOWED_DOMAINS+=("$domain")
+      __SEEN_DOMAINS[$domain]=1
+    fi
+  done
+
+  if [[ -n "$allowed_domains_file" && -e "$allowed_domains_file" ]]; then
+    if [[ ! -r "$allowed_domains_file" ]]; then
+      echo "Error: allowed domains file is not readable: $allowed_domains_file"
+      exit 1
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]]; then
+        continue
+      fi
+      for domain in $line; do
+        if [[ "$domain" == \#* ]]; then
+          break
+        fi
+        if [[ -n "$domain" && -z "${__SEEN_DOMAINS[$domain]+isset}" ]]; then
+          MERGED_OPENAI_ALLOWED_DOMAINS+=("$domain")
+          __SEEN_DOMAINS[$domain]=1
+        fi
+      done
+    done <"$allowed_domains_file"
+  fi
+
+  if [[ -n "$OPENAI_ALLOWED_DOMAINS_ENV" ]]; then
+    read -r -a __USER_DOMAINS <<<"$OPENAI_ALLOWED_DOMAINS_ENV"
+    for domain in "${__USER_DOMAINS[@]}"; do
+      if [[ -n "$domain" && -z "${__SEEN_DOMAINS[$domain]+isset}" ]]; then
+        MERGED_OPENAI_ALLOWED_DOMAINS+=("$domain")
+        __SEEN_DOMAINS[$domain]=1
+      fi
+    done
+  fi
+
+  OPENAI_ALLOWED_DOMAINS="${MERGED_OPENAI_ALLOWED_DOMAINS[*]}"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -167,11 +196,6 @@ if [[ -z "$WORK_DIR" ]]; then
   exit 1
 fi
 
-if [[ -z "$OPENAI_ALLOWED_DOMAINS" ]]; then
-  echo "Error: OPENAI_ALLOWED_DOMAINS is empty."
-  exit 1
-fi
-
 if ! WORK_DIR=$(realpath "$WORK_DIR"); then
   echo "Error: Unable to resolve work directory path."
   exit 1
@@ -223,6 +247,14 @@ if [[ -n "$CODEX_DATA_DIR" ]]; then
   fi
 else
   CODEX_DATA_DIR="$WORK_DIR/.codex"
+fi
+
+HOST_ALLOWED_DOMAINS_FILE="$CODEX_DATA_DIR/allowed_domains.txt"
+merge_allowed_domains "$HOST_ALLOWED_DOMAINS_FILE"
+
+if [[ -z "$OPENAI_ALLOWED_DOMAINS" ]]; then
+  echo "Error: OPENAI_ALLOWED_DOMAINS is empty."
+  exit 1
 fi
 
 READ_ONLY_PATHS_ABS=()

@@ -222,7 +222,13 @@ Lista di domini consentiti dal firewall, separati da spazi. Default (stack OpenA
 OPENAI_ALLOWED_DOMAINS="api.openai.com chat.openai.com chatgpt.com auth0.openai.com platform.openai.com openai.com"
 ```
 
-Se imposti `OPENAI_ALLOWED_DOMAINS`, i domini che specifichi vengono **aggiunti** a quelli di default (non li sostituiscono). Per aggiungere altri domini (es. repository Maven, GitHub) puoi indicare solo gli extra:
+Puoi anche creare un file `allowed_domains.txt` dentro la cartella `--codex-home` (default: `WORK_DIR/.codex/allowed_domains.txt`): ogni riga può contenere uno o più domini separati da spazi. L’ordine di merge è:
+
+1. domini di default;
+2. domini dal file `allowed_domains.txt` (se esiste; righe vuote o che iniziano con `#` sono ignorate);
+3. `OPENAI_ALLOWED_DOMAINS` (se impostata) che ha priorità e viene applicata per ultima.
+
+I domini risultanti vengono uniti senza duplicati. Per aggiungere altri domini (es. repository Maven, GitHub) puoi indicare solo gli extra nell’`allowed_domains.txt` oppure con l’env:
 
 ```bash
 OPENAI_ALLOWED_DOMAINS="repo.maven.apache.org github.com" \
