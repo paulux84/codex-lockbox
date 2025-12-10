@@ -167,11 +167,6 @@ if [[ -z "$WORK_DIR" ]]; then
   exit 1
 fi
 
-if [[ "$WORK_DIR" == "/" ]]; then
-  echo "Error: refusing to use / as work directory."
-  exit 1
-fi
-
 if [[ -z "$OPENAI_ALLOWED_DOMAINS" ]]; then
   echo "Error: OPENAI_ALLOWED_DOMAINS is empty."
   exit 1
@@ -179,6 +174,11 @@ fi
 
 if ! WORK_DIR=$(realpath "$WORK_DIR"); then
   echo "Error: Unable to resolve work directory path."
+  exit 1
+fi
+
+if [[ "$WORK_DIR" == "/" ]]; then
+  echo "Error: refusing to use / as work directory."
   exit 1
 fi
 

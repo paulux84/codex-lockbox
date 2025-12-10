@@ -31,6 +31,7 @@ Note sul layout:
 - Immagini pre-taggate per Node 18/20/22 (`build_node_variants.sh`), alias `codex-sandbox` su Node 22.
 - Esempi di init inclusi (non auto-eseguiti): `sandbox-setup.sh` (Python/Maven/Node) e `sandbox-setup-java-25.sh` (JDK 25 locale al progetto).
 - Mount multipli in sola lettura con `--read-only <path>` (ripetibile, file o directory, montati in `ro` su `/app<path>`); selezione/auto-upgrade versione Codex al runtime non ancora supportata (solo `CODEX_VERSION` in build).
+- Protezione workdir: i percorsi passati a `--work_dir` vengono risolti e se risultano `/` vengono rifiutati (niente mount della root host nel container).
 
 ## Prerequisiti
 
