@@ -24,7 +24,7 @@ Note sul layout:
 ## Funzionalità esportate
 - Esecuzione Codex isolata sulla workdir passata allo script (`--work_dir`), con container dedicato e cleanup automatico.
 - Hook di init configurabile via `--init_script`: esegue solo `/app$WORK_DIR/.codex/.environment/init.sh` se esiste ed è eseguibile, con artefatti isolati in `.codex/.environment` e variabile `SANDBOX_ENV_DIR` nel container.
-- Configurazioni Codex su `/app$WORK_DIR/.codex/.environment` (montata come `/codex_home`): `config.toml` forzabile con `--config` (sovrascrive), altrimenti copiato dall’host se mancante; `auth.json` copiato solo se mancante; sessioni dedicate nel container (default `.codex/.environment/sessions`, override `--sessions-path`, non clonate dall’host).
+- Configurazioni Codex su `/app$WORK_DIR/.codex/.environment` (montata come `/codex_home`): `config.toml` forzabile con `--config` (file oppure directory contenente `config.toml`, sovrascrive), altrimenti copiato dall’host se mancante; `auth.json` copiato solo se mancante (oppure forzato se presente nella directory passata a `--config`); sessioni dedicate nel container (default `.codex/.environment/sessions`, override `--sessions-path`, non clonate dall’host).
 - Utente `codex` non-root nel container con piena lettura/scrittura sulla workdir montata.
 - Firewall interno configurabile (`OPENAI_ALLOWED_DOMAINS`) con default deny e allowlist base per i domini OpenAI/ChatGPT; verifica di blocco e di reachability OpenAI; loopback sempre consentito, rete locale/gateway bloccati.
 - Selezione immagine container via `CODEX_DOCKER_IMAGE` e default workdir via `WORKSPACE_ROOT_DIR`.
@@ -239,7 +239,7 @@ Lo script:
 
 ### `CODEX_CONFIG_DIR`
 
-Controlla **da dove** viene letta la configurazione Codex (incl. `auth.json`, `config.toml`) sul **tuo host**, poi la copia se mancante in `WORK_DIR/.codex/.environment/` e monta quella directory come `/codex_home` (con `CODEX_HOME=/codex_home`). Le sessioni non vengono copiate: il container usa un percorso dedicato (default `WORK_DIR/.codex/.environment/sessions`, override con `--sessions-path`). Puoi sovrascrivere il `config.toml` esplicitamente con `--config <file>`.
+Controlla **da dove** viene letta la configurazione Codex (incl. `auth.json`, `config.toml`) sul **tuo host**, poi la copia se mancante in `WORK_DIR/.codex/.environment/` e monta quella directory come `/codex_home` (con `CODEX_HOME=/codex_home`). Le sessioni non vengono copiate: il container usa un percorso dedicato (default `WORK_DIR/.codex/.environment/sessions`, override con `--sessions-path`). Puoi sovrascrivere il `config.toml` esplicitamente con `--config <file|dir_con_config.toml>`; se passi una directory con anche `auth.json`, verrà copiato (sovrascritto) anch’esso.
 
 Ordine di ricerca per la sorgente host (usato solo se `--config` non è passato e il file è mancante):
 
@@ -341,8 +341,8 @@ Se hai già fatto `codex login` sull’host e in `~/.codex` c’è un `auth.json
 - oppure puntare a una directory dedicata contenente `auth.json`.
 
 Nel container:
-- `auth.json` viene copiato solo se manca in `WORK_DIR/.codex/.environment/`.
-- `config.toml` viene copiato solo se manca, oppure sovrascritto se passi `--config <file>`.
+- `auth.json` viene copiato solo se manca in `WORK_DIR/.codex/.environment/`, oppure sovrascritto se è presente nella directory passata a `--config`.
+- `config.toml` viene copiato solo se manca, oppure sovrascritto se passi `--config <file|dir_con_config.toml>`.
 - Le sessioni sono sempre locali al container: default `WORK_DIR/.codex/.environment/sessions` (override `--sessions-path`).
 
 Se vuoi **configurazioni diverse** solo per il container (es. `web_search_request` diverso), la cosa più pulita è:

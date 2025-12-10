@@ -305,13 +305,29 @@ CODEX_HOME_DIR="$ENV_DIR"
 mkdir -p "$CODEX_HOME_DIR"
 
 if [[ -n "$CONFIG_OVERRIDE_FILE" ]]; then
-  if [[ ! -f "$CONFIG_OVERRIDE_FILE" ]]; then
+  CONFIG_OVERRIDE_PATH="$CONFIG_OVERRIDE_FILE"
+  if [[ -d "$CONFIG_OVERRIDE_PATH" ]]; then
+    CONFIG_OVERRIDE_PATH="$CONFIG_OVERRIDE_PATH/config.toml"
+    if [[ ! -f "$CONFIG_OVERRIDE_PATH" ]]; then
+      echo "Error: --config directory missing config.toml: $CONFIG_OVERRIDE_FILE"
+      exit 1
+    fi
+  fi
+  if [[ ! -f "$CONFIG_OVERRIDE_PATH" ]]; then
     echo "Error: config file not found: $CONFIG_OVERRIDE_FILE"
     exit 1
   fi
-  if ! cp "$CONFIG_OVERRIDE_FILE" "$CODEX_HOME_DIR/config.toml"; then
+  if ! cp "$CONFIG_OVERRIDE_PATH" "$CODEX_HOME_DIR/config.toml"; then
     echo "Error: failed to copy --config file into $CODEX_HOME_DIR"
     exit 1
+  fi
+
+  CONFIG_OVERRIDE_DIR="$(dirname "$CONFIG_OVERRIDE_PATH")"
+  if [[ -f "$CONFIG_OVERRIDE_DIR/auth.json" ]]; then
+    if ! cp "$CONFIG_OVERRIDE_DIR/auth.json" "$CODEX_HOME_DIR/auth.json"; then
+      echo "Error: failed to copy auth.json from --config directory into $CODEX_HOME_DIR"
+      exit 1
+    fi
   fi
 else
   if [[ -n "$CONFIG_SOURCE_DIR" ]]; then
