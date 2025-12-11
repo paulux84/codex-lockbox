@@ -2,7 +2,21 @@
 set -euo pipefail  # Exit on error, undefined vars, and pipeline failures
 IFS=$'\n\t'       # Stricter word splitting
 
-for cmd in iptables ip6tables ipset dig curl; do
+INIT_FIREWALL_MODE="${INIT_FIREWALL_MODE:-proxy}"  # proxy|acl
+case "$INIT_FIREWALL_MODE" in
+  proxy|acl) ;;
+  *)
+    echo "ERROR: INIT_FIREWALL_MODE must be 'proxy' or 'acl' (got '$INIT_FIREWALL_MODE')" >&2
+    exit 1
+    ;;
+esac
+
+required_cmds=(iptables ip6tables curl)
+if [[ "$INIT_FIREWALL_MODE" == "acl" ]]; then
+  required_cmds+=(ipset dig)
+fi
+
+for cmd in "${required_cmds[@]}"; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "ERROR: Required command '$cmd' not found in PATH" >&2
     exit 1
@@ -11,23 +25,29 @@ done
 
 # Proxy configuration (firewall only allows egress to this proxy; domain ACL is enforced by the proxy)
 PROXY_CONFIG_FILE="${PROXY_CONFIG_FILE:-/etc/codex/proxy.conf}"
-if [ -f "$PROXY_CONFIG_FILE" ]; then
-    # shellcheck disable=SC1090
-    source "$PROXY_CONFIG_FILE"
-fi
-
 PROXY_IP_V4="${PROXY_IP_V4:-}"
 PROXY_IP_V6="${PROXY_IP_V6:-}"
 PROXY_PORT="${PROXY_PORT:-3128}"
 
-if [ -z "$PROXY_IP_V4" ] && [ -z "$PROXY_IP_V6" ]; then
-    echo "ERROR: PROXY_IP_V4 or PROXY_IP_V6 must be set (via env or $PROXY_CONFIG_FILE)" >&2
-    exit 1
-fi
+if [[ "$INIT_FIREWALL_MODE" == "proxy" ]]; then
+    if [ -f "$PROXY_CONFIG_FILE" ]; then
+        # shellcheck disable=SC1090
+        source "$PROXY_CONFIG_FILE"
+    fi
 
-if ! [[ "$PROXY_PORT" =~ ^[0-9]+$ ]]; then
-    echo "ERROR: PROXY_PORT must be numeric (got '$PROXY_PORT')" >&2
-    exit 1
+    PROXY_IP_V4="${PROXY_IP_V4:-}"
+    PROXY_IP_V6="${PROXY_IP_V6:-}"
+    PROXY_PORT="${PROXY_PORT:-3128}"
+
+    if [ -z "$PROXY_IP_V4" ] && [ -z "$PROXY_IP_V6" ]; then
+        echo "ERROR: PROXY_IP_V4 or PROXY_IP_V6 must be set (via env or $PROXY_CONFIG_FILE)" >&2
+        exit 1
+    fi
+
+    if ! [[ "$PROXY_PORT" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: PROXY_PORT must be numeric (got '$PROXY_PORT')" >&2
+        exit 1
+    fi
 fi
 
 # Domains file (used by the proxy ACL, not by iptables)
@@ -47,10 +67,10 @@ if [ -f "$ALLOWED_DOMAINS_FILE" ]; then
         echo "ERROR: Allowed domains file is empty after filtering comments/blank lines: $ALLOWED_DOMAINS_FILE" >&2
         exit 1
     fi
-    echo "Using domains from file (for proxy ACL): ${ALLOWED_DOMAINS[*]}"
+    echo "Using domains from file: ${ALLOWED_DOMAINS[*]}"
 else
     ALLOWED_DOMAINS=("${DEFAULT_ALLOWED_DOMAINS[@]}")
-    echo "Domains file not found, falling back to default (for proxy ACL): ${ALLOWED_DOMAINS[*]}"
+    echo "Domains file not found, falling back to default: ${ALLOWED_DOMAINS[*]}"
 fi
 
 RESOLV_CONF_FILE="${RESOLV_CONF_FILE:-/etc/resolv.conf}"
@@ -106,61 +126,65 @@ if [ ${#NAMESERVERS_V4[@]} -eq 0 ] && [ ${#NAMESERVERS_V6[@]} -eq 0 ]; then
     NAMESERVERS_V6=("${DEFAULT_NS_V6[@]}")
 fi
 
-ipset create allowed-domains hash:net -exist
-ipset create allowed-domains6 hash:net family inet6 -exist
+if [[ "$INIT_FIREWALL_MODE" == "acl" ]]; then
+    ipset create allowed-domains hash:net -exist
+    ipset create allowed-domains6 hash:net family inet6 -exist
 
-add_ip_if_public() {
-    local ip="$1" domain="$2" family="$3"
-    if [[ "$family" == "ipv4" ]]; then
-        if is_private_ipv4 "$ip"; then
-            echo "Skipping private/reserved IPv4 $ip for $domain"
-            return 1
+    add_ip_if_public() {
+        local ip="$1" domain="$2" family="$3"
+        if [[ "$family" == "ipv4" ]]; then
+            if is_private_ipv4 "$ip"; then
+                echo "Skipping private/reserved IPv4 $ip for $domain"
+                return 1
+            fi
+            ipset add -exist allowed-domains "$ip"
+        else
+            if is_private_ipv6 "$ip"; then
+                echo "Skipping private/reserved IPv6 $ip for $domain"
+                return 1
+            fi
+            ipset add -exist allowed-domains6 "$ip"
         fi
-        ipset add -exist allowed-domains "$ip"
-    else
-        if is_private_ipv6 "$ip"; then
-            echo "Skipping private/reserved IPv6 $ip for $domain"
-            return 1
+        echo "Adding $ip for $domain"
+        return 0
+    }
+
+    is_ipv4() {
+        local ip="$1"
+        [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+    }
+
+    is_ipv6() {
+        local ip="$1"
+        [[ "$ip" =~ ^[0-9a-fA-F:]+$ ]] && [[ "$ip" == *:* ]]
+    }
+
+    for domain in "${ALLOWED_DOMAINS[@]}"; do
+        have_public=false
+        while IFS= read -r ip; do
+            [[ -z "$ip" ]] && continue
+            is_ipv4 "$ip" || continue
+            if add_ip_if_public "$ip" "$domain" "ipv4"; then
+                have_public=true
+            fi
+        done < <(dig +short A "$domain")
+
+        while IFS= read -r ip6; do
+            [[ -z "$ip6" ]] && continue
+            is_ipv6 "$ip6" || continue
+            if add_ip_if_public "$ip6" "$domain" "ipv6"; then
+                have_public=true
+            fi
+        done < <(dig +short AAAA "$domain")
+
+        if [[ "$have_public" == "false" ]]; then
+            echo "ERROR: All IPs for $domain filtered as private/reserved"
+            exit 1
         fi
-        ipset add -exist allowed-domains6 "$ip"
-    fi
-    echo "Adding $ip for $domain"
-    return 0
-}
-
-is_ipv4() {
-    local ip="$1"
-    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
-}
-
-is_ipv6() {
-    local ip="$1"
-    [[ "$ip" =~ ^[0-9a-fA-F:]+$ ]] && [[ "$ip" == *:* ]]
-}
-
-for domain in "${ALLOWED_DOMAINS[@]}"; do
-    have_public=false
-    while IFS= read -r ip; do
-        [[ -z "$ip" ]] && continue
-        is_ipv4 "$ip" || continue
-        if add_ip_if_public "$ip" "$domain" "ipv4"; then
-            have_public=true
-        fi
-    done < <(dig +short A "$domain")
-
-    while IFS= read -r ip6; do
-        [[ -z "$ip6" ]] && continue
-        is_ipv6 "$ip6" || continue
-        if add_ip_if_public "$ip6" "$domain" "ipv6"; then
-            have_public=true
-        fi
-    done < <(dig +short AAAA "$domain")
-
-    if [[ "$have_public" == "false" ]]; then
-        echo "ERROR: All IPs for $domain filtered as private/reserved"
-        exit 1
-    fi
-done
+    done
+else
+    echo "INIT_FIREWALL_MODE=proxy: skipping ipset/domain ACL population (enforced by Squid)"
+fi
 
 ensure_container_env() {
     if [[ "${INIT_FIREWALL_SKIP_CONTAINER_CHECK:-0}" == "1" ]]; then
@@ -227,15 +251,24 @@ iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 ip6tables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 ip6tables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-# Allow outbound traffic only to the configured proxy
-if [ -n "$PROXY_IP_V4" ]; then
-    echo "Allowing proxy IPv4 $PROXY_IP_V4:$PROXY_PORT"
-    iptables -A OUTPUT -p tcp -d "$PROXY_IP_V4" --dport "$PROXY_PORT" -j ACCEPT
-fi
+# Mode-specific allow rules
+if [[ "$INIT_FIREWALL_MODE" == "proxy" ]]; then
+    # Allow outbound traffic only to the configured proxy
+    if [ -n "$PROXY_IP_V4" ]; then
+        echo "Allowing proxy IPv4 $PROXY_IP_V4:$PROXY_PORT"
+        iptables -A OUTPUT -p tcp -d "$PROXY_IP_V4" --dport "$PROXY_PORT" -j ACCEPT
+    fi
 
-if [ -n "$PROXY_IP_V6" ]; then
-    echo "Allowing proxy IPv6 [$PROXY_IP_V6]:$PROXY_PORT"
-    ip6tables -A OUTPUT -p tcp -d "$PROXY_IP_V6" --dport "$PROXY_PORT" -j ACCEPT
+    if [ -n "$PROXY_IP_V6" ]; then
+        echo "Allowing proxy IPv6 [$PROXY_IP_V6]:$PROXY_PORT"
+        ip6tables -A OUTPUT -p tcp -d "$PROXY_IP_V6" --dport "$PROXY_PORT" -j ACCEPT
+    fi
+else
+    # Allow outbound HTTPS/HTTP only towards the resolved public IPs of allowed domains
+    iptables -A OUTPUT -p tcp -m set --match-set allowed-domains dst --dport 443 -j ACCEPT
+    iptables -A OUTPUT -p tcp -m set --match-set allowed-domains dst --dport 80 -j ACCEPT
+    ip6tables -A OUTPUT -p tcp -m set --match-set allowed-domains6 dst --dport 443 -j ACCEPT
+    ip6tables -A OUTPUT -p tcp -m set --match-set allowed-domains6 dst --dport 80 -j ACCEPT
 fi
 
 # Append final REJECT rules for immediate error responses
@@ -262,39 +295,49 @@ else
     echo "Firewall verification passed - unable to reach https://example.com directly as expected"
 fi
 
-PROXY_TARGET="api.openai.com"
-PROXY_URL_V4=""
-if [ -n "$PROXY_IP_V4" ]; then
-    PROXY_URL_V4="http://${PROXY_IP_V4}:${PROXY_PORT}"
-fi
-PROXY_URL_V6=""
-if [ -n "$PROXY_IP_V6" ]; then
-    PROXY_URL_V6="http://[${PROXY_IP_V6}]:${PROXY_PORT}"
-fi
+TARGET_HOST="api.openai.com"
+if [[ "$INIT_FIREWALL_MODE" == "proxy" ]]; then
+    PROXY_URL_V4=""
+    if [ -n "$PROXY_IP_V4" ]; then
+        PROXY_URL_V4="http://${PROXY_IP_V4}:${PROXY_PORT}"
+    fi
+    PROXY_URL_V6=""
+    if [ -n "$PROXY_IP_V6" ]; then
+        PROXY_URL_V6="http://[${PROXY_IP_V6}]:${PROXY_PORT}"
+    fi
 
-verify_via_proxy() {
-    local proxy_url="$1"
-    local attempts=3
-    local delay=2
-    local i
-    for i in $(seq 1 "$attempts"); do
-        if HTTPS_PROXY="$proxy_url" HTTP_PROXY="$proxy_url" NO_PROXY="" curl --connect-timeout 8 -s "https://${PROXY_TARGET}" >/dev/null 2>&1; then
-            echo "Firewall verification passed - able to reach https://${PROXY_TARGET} via proxy $proxy_url"
-            return 0
-        fi
-        echo "Attempt $i/$attempts: unable to reach https://${PROXY_TARGET} via proxy $proxy_url, retrying in ${delay}s..."
-        sleep "$delay"
-    done
-    echo "ERROR: Firewall verification failed - unable to reach https://${PROXY_TARGET} via proxy $proxy_url after ${attempts} attempts"
-    return 1
-}
+    verify_via_proxy() {
+        local proxy_url="$1"
+        local attempts=3
+        local delay=2
+        local i
+        for i in $(seq 1 "$attempts"); do
+            if HTTPS_PROXY="$proxy_url" HTTP_PROXY="$proxy_url" NO_PROXY="" curl --connect-timeout 8 -s "https://${TARGET_HOST}" >/dev/null 2>&1; then
+                echo "Firewall verification passed - able to reach https://${TARGET_HOST} via proxy $proxy_url"
+                return 0
+            fi
+            echo "Attempt $i/$attempts: unable to reach https://${TARGET_HOST} via proxy $proxy_url, retrying in ${delay}s..."
+            sleep "$delay"
+        done
+        echo "ERROR: Firewall verification failed - unable to reach https://${TARGET_HOST} via proxy $proxy_url after ${attempts} attempts"
+        return 1
+    }
 
-if [ -n "$PROXY_URL_V4" ]; then
-    verify_via_proxy "$PROXY_URL_V4" || exit 1
-fi
+    if [ -n "$PROXY_URL_V4" ]; then
+        verify_via_proxy "$PROXY_URL_V4" || exit 1
+    fi
 
-if [ -n "$PROXY_URL_V6" ]; then
-    verify_via_proxy "$PROXY_URL_V6" || exit 1
+    if [ -n "$PROXY_URL_V6" ]; then
+        verify_via_proxy "$PROXY_URL_V6" || exit 1
+    fi
+else
+    # Direct reachability check without proxy
+    if HTTPS_PROXY="" HTTP_PROXY="" NO_PROXY="*" curl --connect-timeout 8 -s "https://${TARGET_HOST}" >/dev/null 2>&1; then
+        echo "Firewall verification passed - able to reach https://${TARGET_HOST} directly (ACL mode)"
+    else
+        echo "ERROR: Firewall verification failed - unable to reach https://${TARGET_HOST} directly in ACL mode"
+        exit 1
+    fi
 fi
 
 echo "Verification complete"

@@ -18,6 +18,7 @@ CONFIG_OVERRIDE_FILE=""
 SESSIONS_PATH=""
 CODEX_DATA_DIR="${CODEX_DATA_DIR:-}"
 AUTH_FILE_PATH="${CODEX_AUTH_FILE:-}"
+FIREWALL_MODE="proxy"
 WORKDIR_CODEX_DIR=""
 CONFIG_SOURCE_DIR=""
 HOST_ALLOWED_DOMAINS_FILE=""
@@ -188,6 +189,18 @@ while [[ $# -gt 0 ]]; do
       READ_ONLY_PATHS+=("$2")
       shift 2
       ;;
+    --firewall)
+      if [[ -z "${2-}" ]]; then
+        echo "Error: --firewall flag provided but no mode specified (proxy|acl)." >&2
+        exit 1
+      fi
+      FIREWALL_MODE="${2,,}"
+      if [[ "$FIREWALL_MODE" != "proxy" && "$FIREWALL_MODE" != "acl" ]]; then
+        echo "Error: --firewall must be 'proxy' or 'acl' (got '$2')." >&2
+        exit 1
+      fi
+      shift 2
+      ;;
     --config)
       if [[ -z "${2-}" ]]; then
         echo "Error: --config flag provided but no config file specified."
@@ -290,14 +303,18 @@ else
   CODEX_DATA_DIR="$WORK_DIR/.codex"
 fi
 
-# Proxy defaults: if not provided, we will auto-start a Squid container
-if [[ -z "$PROXY_IP_V4" && -z "$PROXY_IP_V6" ]]; then
-  AUTO_SQUID=true
-fi
-
-if ! [[ "$PROXY_PORT" =~ ^[0-9]+$ ]]; then
-  echo "Error: PROXY_PORT must be numeric (got '$PROXY_PORT')."
-  exit 1
+# Proxy defaults: if using proxy mode and no proxy IP provided, auto-start Squid
+if [[ "$FIREWALL_MODE" == "proxy" ]]; then
+  if [[ -z "$PROXY_IP_V4" && -z "$PROXY_IP_V6" ]]; then
+    AUTO_SQUID=true
+  fi
+  if ! [[ "$PROXY_PORT" =~ ^[0-9]+$ ]]; then
+    echo "Error: PROXY_PORT must be numeric (got '$PROXY_PORT')."
+    exit 1
+  fi
+else
+  # ACL mode: do not start or expect a proxy
+  AUTO_SQUID=false
 fi
 
 PROXY_URL_V4=""
@@ -600,41 +617,45 @@ EOF
   PROXY_URL="$PROXY_URL_V4"
 fi
 
-if [[ -z "$PROXY_URL" ]]; then
-  if [[ -n "$PROXY_IP_V4" ]]; then
-    PROXY_URL_V4="http://${PROXY_IP_V4}:${PROXY_PORT}"
-    PROXY_URL="$PROXY_URL_V4"
-  elif [[ -n "$PROXY_IP_V6" ]]; then
-    PROXY_URL_V6="http://[${PROXY_IP_V6}]:${PROXY_PORT}"
-    PROXY_URL="$PROXY_URL_V6"
+if [[ "$FIREWALL_MODE" == "proxy" ]]; then
+  if [[ -z "$PROXY_URL" ]]; then
+    if [[ -n "$PROXY_IP_V4" ]]; then
+      PROXY_URL_V4="http://${PROXY_IP_V4}:${PROXY_PORT}"
+      PROXY_URL="$PROXY_URL_V4"
+    elif [[ -n "$PROXY_IP_V6" ]]; then
+      PROXY_URL_V6="http://[${PROXY_IP_V6}]:${PROXY_PORT}"
+      PROXY_URL="$PROXY_URL_V6"
+    fi
+  fi
+
+  if [[ -z "$PROXY_URL" ]]; then
+    echo "Error: Unable to determine proxy URL."
+    exit 1
   fi
 fi
 
-if [[ -z "$PROXY_URL" ]]; then
-  echo "Error: Unable to determine proxy URL."
-  exit 1
-fi
+if [[ "$FIREWALL_MODE" == "proxy" ]]; then
+  PROXY_CONFIG_FILE="$ALLOWED_DOMAINS_DIR/proxy.conf"
+  {
+    if [[ -n "$PROXY_IP_V4" ]]; then
+      echo "PROXY_IP_V4=$PROXY_IP_V4"
+    fi
+    if [[ -n "$PROXY_IP_V6" ]]; then
+      echo "PROXY_IP_V6=$PROXY_IP_V6"
+    fi
+    echo "PROXY_PORT=$PROXY_PORT"
+  } >"$PROXY_CONFIG_FILE"
 
-PROXY_CONFIG_FILE="$ALLOWED_DOMAINS_DIR/proxy.conf"
-{
-  if [[ -n "$PROXY_IP_V4" ]]; then
-    echo "PROXY_IP_V4=$PROXY_IP_V4"
-  fi
-  if [[ -n "$PROXY_IP_V6" ]]; then
-    echo "PROXY_IP_V6=$PROXY_IP_V6"
-  fi
-  echo "PROXY_PORT=$PROXY_PORT"
-} >"$PROXY_CONFIG_FILE"
-
-# Ensure npm inside Codex/MCP uses the currently-allowed proxy (firewall only permits this IP)
-cat >"$CODEX_HOME_DIR/.npmrc" <<EOF
+  # Ensure npm inside Codex/MCP uses the currently-allowed proxy (firewall only permits this IP)
+  cat >"$CODEX_HOME_DIR/.npmrc" <<EOF
 proxy=$PROXY_URL
 https-proxy=$PROXY_URL
 noproxy=$PROXY_NO_PROXY
 EOF
+fi
 
-//TODO
-//this can be used instead of .npmrc for mcp server... env = { HTTP_PROXY = "$HTTP_PROXY", HTTPS_PROXY = "$HTTPS_PROXY", NO_PROXY = "$NO_PROXY" }
+#//TODO
+#//this can be used instead of .npmrc for mcp server... env = { HTTP_PROXY = "$HTTP_PROXY", HTTPS_PROXY = "$HTTPS_PROXY", NO_PROXY = "$NO_PROXY" }
 
 
 DOCKER_RUN_ARGS=(
@@ -660,7 +681,7 @@ if [[ -n "$AUTH_FILE_MOUNT_PATH" ]]; then
   DOCKER_RUN_ARGS+=(--mount "type=bind,src=$AUTH_FILE_MOUNT_PATH,dst=/codex_home/auth.json,ro")
 fi
 
-if [[ -n "$PROXY_URL" ]]; then
+if [[ "$FIREWALL_MODE" == "proxy" && -n "$PROXY_URL" ]]; then
   DOCKER_RUN_ARGS+=(-e "HTTP_PROXY=$PROXY_URL" -e "HTTPS_PROXY=$PROXY_URL" -e "NO_PROXY=$PROXY_NO_PROXY")
 fi
 
@@ -675,6 +696,7 @@ docker run --rm \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --user root \
+  -e "INIT_FIREWALL_MODE=$FIREWALL_MODE" \
   --network "container:$CONTAINER_NAME" \
   -v "$SCRIPT_DIR/init_firewall.sh:/usr/local/bin/init_firewall.sh:ro" \
   -v "$ALLOWED_DOMAINS_DIR:/etc/codex:ro" \

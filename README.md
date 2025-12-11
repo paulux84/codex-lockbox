@@ -249,6 +249,7 @@ Lo script:
 ## Sicurezza della rete e firewall
 
 - Il firewall di `init_firewall.sh` imposta policy `DROP` su INPUT/OUTPUT/FORWARD e consente in uscita solo il traffico DNS verso resolver pubblici e il traffico verso il proxy (Squid interno o proxy esterno configurato con `PROXY_IP_V4/PROXY_IP_V6` e `PROXY_PORT`); nessuna connessione diretta può uscire senza passare dal proxy.
+- Modalità selezionabile da `run_in_container.sh` con `--firewall proxy|acl` (default `proxy`): in modalità `proxy` usa Squid e iptables minimali; in modalità `acl` il proxy non viene usato e l’uscita è limitata via iptables/ipset ai domini consentiti.
 - Squid, quando avviato automaticamente, si collega alla rete dedicata `codex_net_*` e applica ACL `allowed_sites` basate su `allowed_domains.txt` (domini OpenAI di default più eventuali extra). Sono bloccati i metodi CONNECT verso domini non consentiti e le reti private IPv4/v6; tutto il resto è negato.
 - Il loopback (`-i lo`/`-o lo`) e le connessioni ESTABLISHED/RELATED restano aperte, così i processi nel container continuano a comunicare fra loro e con servizi locali.
 - Il container Codex gira con `--cap-drop=ALL` e `--security-opt no-new-privileges`; le regole iptables vengono applicate da un container separato con `NET_ADMIN`/`NET_RAW` sulla stessa network namespace (`docker run --network container:$CONTAINER_NAME`), evitando che Codex possa modificare il firewall.
