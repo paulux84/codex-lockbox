@@ -626,6 +626,13 @@ PROXY_CONFIG_FILE="$ALLOWED_DOMAINS_DIR/proxy.conf"
   echo "PROXY_PORT=$PROXY_PORT"
 } >"$PROXY_CONFIG_FILE"
 
+# Ensure npm inside Codex/MCP uses the currently-allowed proxy (firewall only permits this IP)
+cat >"$CODEX_HOME_DIR/.npmrc" <<EOF
+proxy=$PROXY_URL
+https-proxy=$PROXY_URL
+noproxy=$PROXY_NO_PROXY
+EOF
+
 DOCKER_RUN_ARGS=(
   --name "$CONTAINER_NAME"
   -d
@@ -637,6 +644,7 @@ DOCKER_RUN_ARGS=(
 
 DOCKER_RUN_ARGS+=(-v "$CODEX_HOME_DIR:/codex_home")
 DOCKER_RUN_ARGS+=(-e "CODEX_HOME=/codex_home")
+DOCKER_RUN_ARGS+=(-e "HOME=/codex_home")
 DOCKER_RUN_ARGS+=(--mount "type=bind,src=$SESSIONS_PATH_ABS,dst=/codex_home/sessions")
 
 AUTH_FILE_MOUNT_PATH=""
