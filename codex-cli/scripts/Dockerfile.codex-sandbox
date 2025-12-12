@@ -29,6 +29,21 @@ RUN npm install -g "@openai/codex@${CODEX_VERSION}" && \
 COPY init_firewall.sh /usr/local/bin/init_firewall.sh
 RUN chmod +x /usr/local/bin/init_firewall.sh
 
+# Ensure Codex home binaries are picked up by all bash invocations (login and non-login via BASH_ENV)
+RUN mkdir -p /etc/profile.d && cat >/etc/profile.d/codex-path.sh <<'EOF'
+#!/usr/bin/env bash
+CODEx_HOME="${CODEX_HOME:-/codex_home}"
+add_path() { case ":$PATH:" in *":$1:"*) ;; *) PATH="$1:$PATH";; esac; }
+add_path "$CODEx_HOME/bin"
+if [ -d "$CODEx_HOME/tools" ]; then
+  while IFS= read -r -d '' d; do
+    add_path "$d"
+  done < <(find "$CODEx_HOME/tools" -mindepth 2 -maxdepth 3 -type d -name bin -print0 2>/dev/null)
+fi
+export PATH
+EOF
+ENV BASH_ENV=/etc/profile.d/codex-path.sh
+
 # Create non-root user (reuse UID 1000 if already present, e.g. node user in base image)
 RUN if id -u codex >/dev/null 2>&1; then \
       : ; \

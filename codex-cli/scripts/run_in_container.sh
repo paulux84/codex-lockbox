@@ -670,6 +670,7 @@ DOCKER_RUN_ARGS=(
 DOCKER_RUN_ARGS+=(-v "$CODEX_HOME_DIR:/codex_home")
 DOCKER_RUN_ARGS+=(-e "CODEX_HOME=/codex_home")
 DOCKER_RUN_ARGS+=(-e "HOME=/codex_home")
+DOCKER_RUN_ARGS+=(-e "PATH=/codex_home/bin:/usr/local/share/npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 DOCKER_RUN_ARGS+=(--mount "type=bind,src=$SESSIONS_PATH_ABS,dst=/codex_home/sessions")
 
 AUTH_FILE_MOUNT_PATH=""
@@ -728,4 +729,12 @@ else
   exec_flags+=(-i)
 fi
 
-docker exec --user codex "${exec_flags[@]}" "$CONTAINER_NAME" bash -c "SANDBOX_ENV_DIR=\"/codex_home\"; cd \"/app$WORK_DIR\" && if [ -x \"\$SANDBOX_ENV_DIR/init.sh\" ]; then \"\$SANDBOX_ENV_DIR/init.sh\"; fi; codex --full-auto${quoted_args}"
+# Run init hook (if present) and prepare symlinks as codex user
+INIT_AND_REFRESH_CMD='refresh_codex_bin(){ local base="${CODEX_HOME:-/codex_home}"; local bin_dir="$base/bin"; local global_bin="/usr/local/share/npm-global/bin"; mkdir -p "$bin_dir"; if [ -d "$base/tools" ]; then find "$base/tools" -mindepth 2 -maxdepth 3 -type d -name bin -print0 | while IFS= read -r -d "" d; do for exe in "$d"/*; do if [ -x "$exe" ]; then name="${exe##*/}"; ln -sf "$exe" "$bin_dir/$name"; if [ -w "$global_bin" ]; then ln -sf "$exe" "$global_bin/$name"; fi; fi; done; done; fi; }; export SANDBOX_ENV_DIR="/codex_home"; export CODEX_HOME="/codex_home"; export PATH="/codex_home/bin:/usr/local/share/npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"; cd "/app'"$WORK_DIR"'" && if [ -x "$SANDBOX_ENV_DIR/init.sh" ]; then source "$SANDBOX_ENV_DIR/init.sh"; fi; refresh_codex_bin'
+docker exec --user codex "${exec_flags[@]}" "$CONTAINER_NAME" bash -c "$INIT_AND_REFRESH_CMD"
+
+# Mirror tools into a standard PATH location as root to survive any PATH sanitization
+docker exec --user root "$CONTAINER_NAME" bash -c 'if [ -d /codex_home/bin ]; then for exe in /codex_home/bin/*; do [ -x "$exe" ] && ln -sf "$exe" /usr/local/bin/"$(basename "$exe")"; done; fi'
+
+# Launch Codex with a PATH that already includes the mirrored bin directory
+docker exec --user codex "${exec_flags[@]}" "$CONTAINER_NAME" bash -c "export SANDBOX_ENV_DIR=\"/codex_home\"; export CODEX_HOME=\"/codex_home\"; export PATH=\"/codex_home/bin:/usr/local/bin:/usr/local/share/npm-global/bin:/usr/local/sbin:/usr/bin:/bin\"; cd \"/app$WORK_DIR\" && codex --full-auto${quoted_args}"
