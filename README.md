@@ -1,4 +1,4 @@
-# Codex Sandbox Wrapper
+# Codex Egress Sandbox
 
 Run the **OpenAI Codex CLI** inside a **sandboxed Docker container** with:
 
