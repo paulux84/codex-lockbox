@@ -700,6 +700,50 @@ proxy=$PROXY_URL
 https-proxy=$PROXY_URL
 noproxy=$PROXY_NO_PROXY
 EOF
+
+  # Automatically inject proxy env into MCP servers:
+  # 1) if env block is missing -> add it
+  # 2) if env exists but missing one of HTTP_PROXY/HTTPS_PROXY/NO_PROXY -> add only missing keys
+  # 3) if all present -> no change
+  if [[ "${AUTO_INJECT_MCP_PROXY_ENV:-1}" == "1" && -f "$CODEX_HOME_DIR/config.toml" ]]; then
+    echo "Injecting proxy env into MCP server definitions (AUTO_INJECT_MCP_PROXY_ENV=1)"
+    tmp_config="$(mktemp)"
+    awk -v http="$PROXY_URL" -v https="$PROXY_URL" -v nop="$PROXY_NO_PROXY" '
+      function emit_env_line() {
+        print "env = { HTTP_PROXY = \"" http "\", HTTPS_PROXY = \"" https "\", NO_PROXY = \"" nop "\" }"
+      }
+      function add_missing(line) {
+        has_http = (line ~ /HTTP_PROXY[[:space:]]*=/)
+        has_https = (line ~ /HTTPS_PROXY[[:space:]]*=/)
+        has_nop = (line ~ /NO_PROXY[[:space:]]*=/)
+        if (has_http && has_https && has_nop) return line
+        suffix = ""
+        if (!has_http)  suffix = suffix ", HTTP_PROXY = \"" http "\""
+        if (!has_https) suffix = suffix ", HTTPS_PROXY = \"" https "\""
+        if (!has_nop)   suffix = suffix ", NO_PROXY = \"" nop "\""
+        sub(/[[:space:]]*}[[:space:]]*$/, suffix " }", line)
+        return line
+      }
+      /^\[mcp_servers\.[^]]+\]/ {
+        if (in_mcp && !have_env) emit_env_line()
+        in_mcp=1; have_env=0
+      }
+      in_mcp && /^\[.*\]/ && $0 !~ /^\[mcp_servers\./ {
+        if (!have_env) emit_env_line()
+        in_mcp=0
+      }
+      {
+        if (in_mcp && $0 ~ /^env[[:space:]]*=/) {
+          have_env=1
+          $0 = add_missing($0)
+        }
+        print $0
+      }
+      END {
+        if (in_mcp && !have_env) emit_env_line()
+      }
+    ' "$CODEX_HOME_DIR/config.toml" >"$tmp_config" && mv "$tmp_config" "$CODEX_HOME_DIR/config.toml"
+  fi
 fi
 
 #//TODO
