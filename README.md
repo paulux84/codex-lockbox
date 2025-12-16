@@ -1,6 +1,8 @@
-# Codex Egress Sandbox
+# Codex Lockbox: Egress‑restricted Sandbox for OpenAI Codex CLI
 
-Run the **OpenAI Codex CLI** inside a **sandboxed Docker container** with:
+[![Codex Lockbox Logo](./docs/codex-lockbox-logo.png)](./docs/codex-lockbox-logo.png)
+
+Run the **OpenAI Codex CLI** inside a **firewalled sandboxed Docker container** with:
 
 - a custom `codex-sandbox` image that ships with Node.js and `@openai/codex`;
 - an internal, default‑deny firewall with an allowlist of outbound domains;
