@@ -826,7 +826,7 @@ INIT_AND_REFRESH_CMD='refresh_codex_bin(){ local base="${CODEX_HOME:-/codex_home
 docker exec --user codex "${exec_flags[@]}" "$CONTAINER_NAME" bash -c "$INIT_AND_REFRESH_CMD"
 
 # Mirror tools into a standard PATH location as root to survive any PATH sanitization
-docker exec --user root "$CONTAINER_NAME" bash -c 'if [ -d /codex_home/bin ]; then for exe in /codex_home/bin/*; do [ -x "$exe" ] && ln -sf "$exe" /usr/local/bin/"$(basename "$exe")"; done; fi'
+# docker exec --user root "$CONTAINER_NAME" bash -c 'if [ -d /codex_home/bin ]; then for exe in /codex_home/bin/*; do [ -x "$exe" ] && ln -sf "$exe" /usr/local/bin/"$(basename "$exe")"; done; fi'
 
 # Launch Codex with a PATH that already includes the mirrored bin directory
 docker exec --user codex "${exec_flags[@]}" "$CONTAINER_NAME" bash -c "export SANDBOX_ENV_DIR=\"/codex_home\"; export CODEX_HOME=\"/codex_home\"; export PATH=\"/codex_home/bin:/usr/local/bin:/usr/local/share/npm-global/bin:/usr/local/sbin:/usr/bin:/bin\"; cd \"/app$WORK_DIR\" && codex --full-auto${quoted_args}"
