@@ -167,6 +167,9 @@ The wrapper will:
 - expose `.codex/.environment` as `SANDBOX_ENV_DIR` inside the container,
 - execute the hook from the project directory **before** starting Codex.
 
+If you also need root-level setup (for example `apt-get install`), place an executable
+`WORK_DIR/.codex/.environment/init_root.sh`. It runs as `root` before `init.sh`.
+
 You can also manually prepare `.codex/.environment/init.sh` in the workdir; it will be used automatically when present and executable.
 
 ### Example: allow additional outbound domains
@@ -294,6 +297,10 @@ If no credentials are found, Codex inside the container will show its normal log
 
 If `/app$WORK_DIR/.codex/.environment/init.sh` already exists and is executable, it will be used even if you do not pass `--init_script`.
 
+Root init hook (optional):
+
+- If `/app$WORK_DIR/.codex/.environment/init_root.sh` exists and is executable, it will be run as `root` before `init.sh`.
+
 ### Docker image selection
 
 - By default the wrapper uses the `codex-sandbox` image.
@@ -314,6 +321,7 @@ If `/app$WORK_DIR/.codex/.environment/init.sh` already exists and is executable,
 - Codex runs as the `codex` user, not root.
 - The workdir is mounted at `/app$WORK_DIR` and used as the working directory.
 - `/codex_home` is the container’s Codex home, backed by `WORK_DIR/.codex/.environment`.
+- `npm` and `uv` (includes `uvx`) are available by default in the `codex-sandbox` image.
 
 ---
 

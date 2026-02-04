@@ -821,7 +821,11 @@ else
   exec_flags+=(-i)
 fi
 
-# Run init hook (if present) and prepare symlinks as codex user
+# Run optional root init hook (if present)
+INIT_ROOT_CMD='export SANDBOX_ENV_DIR="/codex_home"; export CODEX_HOME="/codex_home"; export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"; cd "/app'"$WORK_DIR"'" && if [ -x "$SANDBOX_ENV_DIR/init_root.sh" ]; then source "$SANDBOX_ENV_DIR/init_root.sh"; fi'
+docker exec --user root "${exec_flags[@]}" "$CONTAINER_NAME" bash -c "$INIT_ROOT_CMD"
+
+# Run user init hook (if present) and prepare symlinks as codex user
 INIT_AND_REFRESH_CMD='refresh_codex_bin(){ local base="${CODEX_HOME:-/codex_home}"; local bin_dir="$base/bin"; local global_bin="/usr/local/share/npm-global/bin"; mkdir -p "$bin_dir"; if [ -d "$base/tools" ]; then find "$base/tools" -mindepth 2 -maxdepth 3 -type d -name bin -print0 | while IFS= read -r -d "" d; do for exe in "$d"/*; do if [ -x "$exe" ]; then name="${exe##*/}"; ln -sf "$exe" "$bin_dir/$name"; if [ -w "$global_bin" ]; then ln -sf "$exe" "$global_bin/$name"; fi; fi; done; done; fi; }; export SANDBOX_ENV_DIR="/codex_home"; export CODEX_HOME="/codex_home"; export PATH="/codex_home/bin:/usr/local/share/npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"; cd "/app'"$WORK_DIR"'" && if [ -x "$SANDBOX_ENV_DIR/init.sh" ]; then source "$SANDBOX_ENV_DIR/init.sh"; fi; refresh_codex_bin'
 docker exec --user codex "${exec_flags[@]}" "$CONTAINER_NAME" bash -c "$INIT_AND_REFRESH_CMD"
 
